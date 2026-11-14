@@ -7,7 +7,7 @@
 
 - This project collects Cucumber JSON reports from configured GitHub repositories and combines their scenarios into one Allure dashboard;
 - Each Allure scenario includes its repository, feature, tags, step and hook results, failure details, and a link to the source Actions run;
-- The dashboard is published to GitHub Pages once per day and can also be generated manually from the Actions tab.
+- The dashboard is published to GitHub Pages once per week (Sunday at 00:00 UTC) and can also be generated manually from the Actions tab.
 
 ### Requirements
 
@@ -24,10 +24,11 @@
 ### Dashboard Data Flow
 
 1. The scheduled or manually dispatched workflow checks formatting, tests and compiles the collector;
-2. The collector reads `config.properties` and finds the latest completed run on each configured branch and workflow;
-3. It downloads the configured artifact from each run and selects Cucumber JSON files matching that repository's `cucumber` glob;
-4. Cucumber scenarios are converted to Allure results, including scenario status, step and hook details, tags, and source-run links;
-5. Allure CLI generates a static site, which the workflow publishes to GitHub Pages.
+2. The collector reads `config.properties` and searches completed runs on each configured branch and workflow, newest first, for an unexpired matching artifact;
+3. If a run has no usable artifact, the collector falls back to older completed runs; a failure for one repository is logged without preventing other repositories from being published;
+4. It downloads each selected artifact and uses Cucumber JSON files matching that repository's `cucumber` glob;
+5. Cucumber scenarios are converted to Allure results, including scenario status, step and hook details, tags, and source-run links;
+6. Allure CLI generates a static site, which the workflow publishes to GitHub Pages.
 
 ### Configuration
 

@@ -296,16 +296,11 @@ async function requestJson(url: string, token?: string): Promise<JsonRecord> {
   return response;
 }
 
-async function getLatestRun(repository: Repository, token?: string): Promise<WorkflowRun> {
+export async function getLatestRun(repository: Repository, token?: string): Promise<{ run: WorkflowRun; artifact: Artifact }> {
   const owner = encodeURIComponent(repository.owner);
   const repo = encodeURIComponent(repository.repo);
   const workflow = encodeURIComponent(repository.workflow);
-  const query = new URLSearchParams({
-    [CONSTANTS.api.branchQueryKey]: repository.branch,
-    [CONSTANTS.api.statusQueryKey]: CONSTANTS.api.completedStatus,
-    [CONSTANTS.api.pageSizeQueryKey]: CONSTANTS.api.runPageSize
-  });
-  const url = `${apiUrl(
+  const endpoint = apiUrl(
     CONSTANTS.api.resourceSegment,
     owner,
     repo,
@@ -313,27 +308,59 @@ async function getLatestRun(repository: Repository, token?: string): Promise<Wor
     CONSTANTS.api.workflowsSegment,
     workflow,
     CONSTANTS.api.runsSegment
-  )}?${query}`;
-  const response = await requestJson(url, token);
-  const runs = response[CONSTANTS.api.workflowRunsKey];
-  if (!Array.isArray(runs) || !isRecord(runs[0])) {
+  );
+  let page = 1;
+  let lastRun: WorkflowRun | undefined;
+  while (true) {
+    const query = new URLSearchParams({
+      [CONSTANTS.api.branchQueryKey]: repository.branch,
+      [CONSTANTS.api.statusQueryKey]: CONSTANTS.api.completedStatus,
+      [CONSTANTS.api.pageSizeQueryKey]: CONSTANTS.api.runPageSize,
+      [CONSTANTS.api.pageQueryKey]: String(page)
+    });
+    const response = await requestJson(`${endpoint}?${query}`, token);
+    const runs = response[CONSTANTS.api.workflowRunsKey];
+    if (!Array.isArray(runs)) {
+      throw new DashboardError(ERROR_MESSAGES.noCompletedRun(owner, repo, repository.workflow, repository.branch));
+    }
+
+    for (const value of runs) {
+      if (!isRecord(value)) {
+        throw new DashboardError(ERROR_MESSAGES.invalidLatestRun(owner, repo));
+      }
+      const id = value[CONSTANTS.api.idKey];
+      const htmlUrl = value[CONSTANTS.api.htmlUrlKey];
+      const conclusion = value[CONSTANTS.api.conclusionKey];
+      if (typeof id !== 'number' || typeof htmlUrl !== 'string') {
+        throw new DashboardError(ERROR_MESSAGES.invalidLatestRun(owner, repo));
+      }
+      const run: WorkflowRun = {
+        id,
+        html_url: htmlUrl,
+        conclusion: typeof conclusion === 'string' ? conclusion : null
+      };
+      lastRun = run;
+      const artifact = await getArtifact(repository, run, token);
+      if (artifact) {
+        return { run, artifact };
+      }
+    }
+
+    if (runs.length === 0 && !lastRun) {
+      throw new DashboardError(ERROR_MESSAGES.noCompletedRun(owner, repo, repository.workflow, repository.branch));
+    }
+    if (runs.length < Number(CONSTANTS.api.runPageSize)) {
+      break;
+    }
+    page += 1;
+  }
+  if (!lastRun) {
     throw new DashboardError(ERROR_MESSAGES.noCompletedRun(owner, repo, repository.workflow, repository.branch));
   }
-  const run = runs[0];
-  const id = run[CONSTANTS.api.idKey];
-  const htmlUrl = run[CONSTANTS.api.htmlUrlKey];
-  const conclusion = run[CONSTANTS.api.conclusionKey];
-  if (typeof id !== 'number' || typeof htmlUrl !== 'string') {
-    throw new DashboardError(ERROR_MESSAGES.invalidLatestRun(owner, repo));
-  }
-  return {
-    id,
-    html_url: htmlUrl,
-    conclusion: typeof conclusion === 'string' ? conclusion : null
-  };
+  throw new DashboardError(ERROR_MESSAGES.noArtifact(lastRun.html_url, JSON.stringify(repository.artifact)));
 }
 
-async function getArtifact(repository: Repository, run: WorkflowRun, token?: string): Promise<Artifact> {
+async function getArtifact(repository: Repository, run: WorkflowRun, token?: string): Promise<Artifact | undefined> {
   const owner = encodeURIComponent(repository.owner);
   const repo = encodeURIComponent(repository.repo);
   const query = new URLSearchParams({
@@ -364,7 +391,7 @@ async function getArtifact(repository: Repository, run: WorkflowRun, token?: str
   usable.sort((left, right) => stringValue(right[CONSTANTS.api.createdAtKey]).localeCompare(stringValue(left[CONSTANTS.api.createdAtKey])));
   const artifact = usable[0];
   if (!artifact) {
-    throw new DashboardError(ERROR_MESSAGES.noArtifact(run.html_url, JSON.stringify(repository.artifact)));
+    return undefined;
   }
   const artifactId = artifact[CONSTANTS.api.idKey];
   const createdAt = artifact[CONSTANTS.api.createdAtKey];
@@ -733,25 +760,48 @@ async function writeResults(output: string, results: AllureResult[], repositorie
 export async function buildDashboard(configPath: string, output: string): Promise<number> {
   const repositories = loadRepositories(await readFile(configPath, CONSTANTS.files.utf8Encoding));
   const token = process.env[CONSTANTS.files.reportsTokenVariable] || undefined;
+  const collected = await collectRepositories(repositories, async (repository) => {
+    const { run, artifact } = await getLatestRun(repository, token);
+    if (!CONSTANTS.runConclusions.some((conclusion) => conclusion === run.conclusion)) {
+      throw new DashboardError(ERROR_MESSAGES.unsupportedRunConclusion(run.html_url, JSON.stringify(run.conclusion)));
+    }
+    const files = await downloadArtifact(repository, artifact, token);
+    return { runUrl: run.html_url, results: convertArtifact(files, repository, run.html_url) };
+  });
+
+  await writeResults(output, collected.results, collected.repositories);
+  console.log(LOG_MESSAGES.generatedResults(collected.results.length, output));
+  return collected.results.length;
+}
+
+export async function collectRepositories(
+  repositories: Repository[],
+  collectRepository: (repository: Repository) => Promise<{ runUrl: string; results: AllureResult[] }>
+): Promise<{ results: AllureResult[]; repositories: Repository[] }> {
   const results: AllureResult[] = [];
+  const collectedRepositories: Repository[] = [];
+  const failures: string[] = [];
 
   for (const repository of repositories) {
     const identity = repositoryIdentity(repository.owner, repository.repo);
     console.log(LOG_MESSAGES.collectingRepository(identity));
-    const run = await getLatestRun(repository, token);
-    if (!CONSTANTS.runConclusions.some((conclusion) => conclusion === run.conclusion)) {
-      throw new DashboardError(ERROR_MESSAGES.unsupportedRunConclusion(run.html_url, JSON.stringify(run.conclusion)));
+    try {
+      const collected = await collectRepository(repository);
+      console.log(LOG_MESSAGES.addedResults(collected.results.length, collected.runUrl));
+      results.push(...collected.results);
+      collectedRepositories.push(repository);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const failure = LOG_MESSAGES.repositoryFailed(identity, reason);
+      console.error(failure);
+      failures.push(failure);
     }
-    const artifact = await getArtifact(repository, run, token);
-    const files = await downloadArtifact(repository, artifact, token);
-    const converted = convertArtifact(files, repository, run.html_url);
-    console.log(LOG_MESSAGES.addedResults(converted.length, run.html_url));
-    results.push(...converted);
   }
 
-  await writeResults(output, results, repositories);
-  console.log(LOG_MESSAGES.generatedResults(results.length, output));
-  return results.length;
+  if (collectedRepositories.length === 0) {
+    throw new DashboardError(ERROR_MESSAGES.noRepositoryReports(failures.join(CONSTANTS.separators.lineBreak)));
+  }
+  return { results, repositories: collectedRepositories };
 }
 
 async function main(): Promise<void> {
