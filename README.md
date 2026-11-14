@@ -1,3 +1,5 @@
+![Repo Dashboard banner](./assets/banner.png)
+
 > [!NOTE]
 > Access the [DiogoBett](https://github.com/DiogoBett) Automation Dashboard on the GitHub Pages: https://diogobett.github.io/foundation-repo-dashboard/
 
