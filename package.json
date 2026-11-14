@@ -5,8 +5,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/build-dashboard.test.js",
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format": "prettier --write \".github/**/*.yml\" \"*.json\" \"*.md\" \"src/**/*.ts\"",
+    "format:check": "prettier --check \".github/**/*.yml\" \"*.json\" \"*.md\" \"src/**/*.ts\""
   },
   "dependencies": {
     "minimatch": "^11.0.8",
@@ -16,7 +16,6 @@
     "@types/node": "^26.6.6",
     "@types/yauzl": "^3.4.0",
     "prettier": "^3.10.1",
-    "prettier-plugin-properties": "^0.3.1",
     "typescript": "^7.0.2"
   }
 }
