@@ -224,6 +224,11 @@ async function requestBytes(url: string, token?: string): Promise<Buffer> {
 
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 2048).trim();
+    if (response.status === 401) {
+      throw new DashboardError(
+        `GitHub rejected the request for ${url}. Add or verify the REPORTS_READ_TOKEN repository secret. It must be a fine-grained token with Actions: read access to every configured source repository. ${detail}`
+      );
+    }
     throw new DashboardError(`GitHub request failed (${response.status}) for ${url}: ${detail || response.statusText}`);
   }
 

@@ -37,6 +37,8 @@ jobs:
         run: npm test
 
       - name: Collect and convert reports
+        env:
+          REPORTS_READ_TOKEN: ${{ secrets.REPORTS_READ_TOKEN }}
         run: node dist/build-dashboard.js --config config.properties --output allure-results
 
       - name: Set up Java
