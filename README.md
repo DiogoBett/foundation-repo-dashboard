@@ -48,5 +48,8 @@
 
 ### FAQ / Troubleshooting
 
+- Why does artifact download fail with HTTP 401?
+  - Add a fine-grained personal access token as the `REPORTS_READ_TOKEN` Actions repository secret;
+  - Grant it **Actions: Read-only** access to every repository listed in `config.properties`.
 - Where is the published dashboard?
   - Enable GitHub Pages with **GitHub Actions** as the source, then open the Pages URL shown in the `Deploy to GitHub Pages` workflow job.

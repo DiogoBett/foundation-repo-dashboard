@@ -1,0 +1,187 @@
+export const CONSTANTS = {
+  api: {
+    baseUrl: 'https://api.github.com',
+    acceptHeader: 'Accept',
+    acceptValue: 'application/vnd.github+json',
+    userAgentHeader: 'User-Agent',
+    userAgentValue: 'foundation-repo-dashboard',
+    versionHeader: 'X-GitHub-Api-Version',
+    versionValue: '2022-11-28',
+    authorizationHeader: 'Authorization',
+    bearerPrefix: 'Bearer ',
+    completedStatus: 'completed',
+    runPageSize: '1',
+    artifactPageSize: '100',
+    resourceSegment: 'repos',
+    actionsSegment: 'actions',
+    workflowsSegment: 'workflows',
+    runsSegment: 'runs',
+    artifactsSegment: 'artifacts',
+    archiveFormat: 'zip',
+    branchQueryKey: 'branch',
+    statusQueryKey: 'status',
+    pageSizeQueryKey: 'per_page',
+    artifactNameQueryKey: 'name',
+    workflowRunsKey: 'workflow_runs',
+    artifactsKey: 'artifacts',
+    idKey: 'id',
+    htmlUrlKey: 'html_url',
+    conclusionKey: 'conclusion',
+    nameKey: 'name',
+    expiredKey: 'expired',
+    createdAtKey: 'created_at'
+  },
+  http: {
+    unauthorizedStatus: 401,
+    contentLengthHeader: 'content-length'
+  },
+  config: {
+    repositoryListKey: 'repositories',
+    ownerKey: 'owner',
+    repoKey: 'repo',
+    branchKey: 'branch',
+    workflowKey: 'workflow',
+    artifactKey: 'artifact',
+    cucumberKey: 'cucumber',
+    commentPrefixes: ['#', '!'],
+    propertySeparator: '=',
+    repoKeySeparator: '.',
+    repositoryIdPattern: '^[A-Za-z0-9_.-]+$',
+    repositoryValuePattern: '^[A-Za-z0-9_.-]+$',
+    listSeparator: ',',
+    pathSeparator: '/',
+    windowsPathSeparator: '\\',
+    traversalSegment: '..'
+  },
+  files: {
+    jsonExtension: '.json',
+    utf8Encoding: 'utf8',
+    hashAlgorithm: 'sha256',
+    hashEncoding: 'hex',
+    zipDirectorySuffix: '/',
+    configOption: '--config',
+    outputOption: '--output',
+    resultFileSuffix: '-result.json',
+    executorFile: 'executor.json',
+    environmentFile: 'environment.properties',
+    sourceRepositoriesProperty: 'source.repositories',
+    runNumberVariable: 'GITHUB_RUN_NUMBER',
+    serverUrlVariable: 'GITHUB_SERVER_URL',
+    repositoryVariable: 'GITHUB_REPOSITORY',
+    reportsTokenVariable: 'REPORTS_READ_TOKEN'
+  },
+  cucumber: {
+    featuresKey: 'features',
+    elementsKey: 'elements',
+    beforeKey: 'before',
+    stepsKey: 'steps',
+    afterKey: 'after',
+    typeKey: 'type',
+    backgroundType: 'background',
+    nameKey: 'name',
+    idKey: 'id',
+    uriKey: 'uri',
+    startTimestampKey: 'start_timestamp',
+    tagsKey: 'tags',
+    resultKey: 'result',
+    statusKey: 'status',
+    durationKey: 'duration',
+    errorMessageKey: 'error_message',
+    matchKey: 'match',
+    locationKey: 'location',
+    tagPrefix: '@',
+    beforeHookName: 'Before hook',
+    afterHookName: 'After hook',
+    unnamedStep: 'Unnamed step',
+    unnamedScenario: 'Unnamed scenario',
+    errorNameHint: 'cucumber',
+    locationPrefix: ' (',
+    locationSuffix: ')',
+    featureSeparator: ' / ',
+    status: {
+      passed: 'passed',
+      failed: 'failed',
+      ambiguous: 'ambiguous',
+      undefined: 'undefined',
+      pending: 'pending',
+      skipped: 'skipped',
+      unknown: 'unknown',
+      broken: 'broken'
+    }
+  },
+  allure: {
+    finishedStage: 'finished',
+    parentSuiteLabel: 'parentSuite',
+    suiteLabel: 'suite',
+    packageLabel: 'package',
+    tagLabel: 'tag',
+    sourceTagPrefix: 'source:',
+    formatTagPrefix: 'format:',
+    sourceFormat: 'cucumber',
+    runLinkName: 'GitHub Actions run',
+    linkType: 'link',
+    executorName: 'GitHub Actions',
+    executorType: 'github'
+  },
+  runtime: {
+    githubFallbackUrl: 'https://github.com',
+    localBuildName: 'local',
+    dashboardErrorName: 'DashboardError'
+  },
+  runConclusions: ['success', 'failure', 'cancelled', 'timed_out'],
+  regex: {
+    lineBreak: /\r?\n/
+  },
+  separators: {
+    trace: '\n\n',
+    lineBreak: '\n',
+    hash: '#'
+  },
+  strings: {
+    empty: ''
+  }
+} as const;
+
+export const ERROR_MESSAGES = {
+  missingConfigValue: (key: string) => `Missing required config.properties value: ${key}`,
+  invalidGlob: (key: string, pattern: string) => `Invalid artifact file pattern in ${key}: ${pattern}`,
+  missingCucumberGlob: (key: string) => `${key} must configure at least one artifact file pattern`,
+  invalidRepositoryId: (id: string) => `Invalid repository identifier: ${id}`,
+  invalidRepositoryField: (field: string, value: string) => `Repository configuration has an invalid ${field}: ${value}`,
+  invalidPropertiesLine: (line: number) => `Invalid config.properties line ${line}: expected key=value`,
+  duplicatePropertiesKey: (line: number, key: string) => `Duplicate config.properties key on line ${line}: ${key}`,
+  emptyRepositoryList: 'config.properties must list at least one repository',
+  duplicateRepositories: 'Repository config contains duplicate repositories',
+  requestFailed: (url: string, reason: string) => `GitHub request failed for ${url}: ${reason}`,
+  unauthorizedRequest: (url: string, detail: string) =>
+    `GitHub rejected the request for ${url}. Add or verify the REPORTS_READ_TOKEN repository secret. It must be a fine-grained token with Actions: read access to every configured source repository. ${detail}`,
+  httpRequestFailed: (status: number, url: string, detail: string) => `GitHub request failed (${status}) for ${url}: ${detail}`,
+  responseTooLarge: (url: string) => `Response from ${url} exceeds the 100 MiB download limit`,
+  unexpectedEmptyResponse: (url: string) => `GitHub returned an empty response for ${url}`,
+  invalidJsonResponse: (url: string) => `GitHub returned invalid JSON for ${url}`,
+  unexpectedResponse: (url: string) => `GitHub returned an unexpected response for ${url}`,
+  noCompletedRun: (owner: string, repo: string, workflow: string, branch: string) =>
+    `No completed run found for ${owner}/${repo} workflow ${workflow} on branch ${branch}`,
+  invalidLatestRun: (owner: string, repo: string) => `GitHub returned an invalid latest run for ${owner}/${repo}`,
+  invalidArtifactList: (owner: string, repo: string) => `GitHub returned an invalid artifact list for ${owner}/${repo}`,
+  noArtifact: (runUrl: string, artifact: string) =>
+    `Run ${runUrl} has no unexpired artifact named ${artifact}; make sure report artifacts are uploaded even when tests fail`,
+  invalidArchive: (owner: string, repo: string) => `Artifact ${owner}/${repo} is not a valid ZIP archive`,
+  tooManyArchiveFiles: (owner: string, repo: string) => `Artifact ${owner}/${repo} contains too many files`,
+  archiveTooLarge: (owner: string, repo: string) => `Artifact ${owner}/${repo} exceeds the 250 MiB uncompressed limit`,
+  fileTooLarge: (filename: string) => `File ${filename} exceeds the uncompressed size limit`,
+  archiveReadFailed: (owner: string, repo: string, reason: string) => `Could not read artifact ZIP for ${owner}/${repo}: ${reason}`,
+  invalidCucumberJson: (filename: string, reason: string) => `Invalid Cucumber JSON in ${filename}: ${reason}`,
+  noCucumberScenarios: (owner: string, repo: string) =>
+    `Artifact ${owner}/${repo} contains no usable Cucumber scenarios. Include Cucumber JSON matching the configured file pattern; rendered HTML reports cannot be converted into reliable Allure test results.`,
+  outputNotEmpty: (output: string) => `Output directory ${output} must be empty`,
+  unsupportedRunConclusion: (runUrl: string, conclusion: string) => `Latest run ${runUrl} has unsupported conclusion ${conclusion}`,
+  cliUsage: 'Usage: node dist/build-dashboard.js --config <config.properties> --output <allure-results>'
+} as const;
+
+export const LOG_MESSAGES = {
+  collectingRepository: (identity: string) => `Collecting latest completed report from ${identity}...`,
+  addedResults: (count: number, runUrl: string) => `  Added ${count} test results from run ${runUrl}`,
+  generatedResults: (count: number, output: string) => `Generated ${count} Allure test results in ${output}`,
+  error: (message: string) => `Error: ${message}`
+} as const;

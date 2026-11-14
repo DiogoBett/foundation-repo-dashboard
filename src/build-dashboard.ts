@@ -4,8 +4,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { minimatch } from 'minimatch';
 import yauzl from 'yauzl';
+import { CONSTANTS, ERROR_MESSAGES, LOG_MESSAGES } from './constants.js';
 
-const API_ROOT = 'https://api.github.com';
 const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
 const MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024;
 const MAX_ARCHIVE_FILES = 10_000;
@@ -47,7 +47,7 @@ export interface AllureResult {
   name: string;
   fullName: string;
   status: string;
-  stage: 'finished';
+  stage: typeof CONSTANTS.allure.finishedStage;
   start: number;
   stop: number;
   labels: AllureLabel[];
@@ -65,7 +65,7 @@ export interface AllureResult {
 interface AllureStep {
   name: string;
   status: string;
-  stage: 'finished';
+  stage: typeof CONSTANTS.allure.finishedStage;
   start: number;
   stop: number;
   statusDetails?: NonNullable<AllureResult['statusDetails']>;
@@ -74,7 +74,7 @@ interface AllureStep {
 export class DashboardError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
-    this.name = 'DashboardError';
+    this.name = CONSTANTS.runtime.dashboardErrorName;
   }
 }
 
@@ -82,7 +82,7 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function stringValue(value: unknown, fallback = ''): string {
+function stringValue(value: unknown, fallback: string = CONSTANTS.strings.empty): string {
   return typeof value === 'string' ? value : fallback;
 }
 
@@ -94,8 +94,16 @@ function recordArray(value: unknown): JsonRecord[] {
   return arrayValue(value).filter(isRecord);
 }
 
+function getRecord(value: unknown, key: string): JsonRecord | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const record = value[key];
+  return isRecord(record) ? record : undefined;
+}
+
 function hash(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
+  return createHash(CONSTANTS.files.hashAlgorithm).update(value).digest(CONSTANTS.files.hashEncoding);
 }
 
 function durationMilliseconds(value: unknown, scale = 1000): number {
@@ -116,43 +124,49 @@ function timestampMilliseconds(value: unknown): number {
 function requiredProperty(properties: Map<string, string>, key: string): string {
   const value = properties.get(key)?.trim();
   if (!value) {
-    throw new DashboardError(`Missing required config.properties value: ${key}`);
+    throw new DashboardError(ERROR_MESSAGES.missingConfigValue(key));
   }
   return value;
 }
 
 function parsePatterns(value: string | undefined, key: string): string[] {
-  const patterns = (value ?? '')
-    .split(',')
+  const patterns = (value ?? CONSTANTS.strings.empty)
+    .split(CONSTANTS.config.listSeparator)
     .map((pattern) => pattern.trim())
     .filter(Boolean);
   for (const pattern of patterns) {
-    if (pattern.startsWith('/') || pattern.replaceAll('\\', '/').split('/').includes('..')) {
-      throw new DashboardError(`Invalid artifact file pattern in ${key}: ${pattern}`);
+    if (
+      pattern.startsWith(CONSTANTS.config.pathSeparator) ||
+      pattern
+        .replaceAll(CONSTANTS.config.windowsPathSeparator, CONSTANTS.config.pathSeparator)
+        .split(CONSTANTS.config.pathSeparator)
+        .includes(CONSTANTS.config.traversalSegment)
+    ) {
+      throw new DashboardError(ERROR_MESSAGES.invalidGlob(key, pattern));
     }
   }
   return patterns;
 }
 
 function validateRepository(properties: Map<string, string>, id: string): Repository {
-  if (!/^[A-Za-z0-9_.-]+$/.test(id)) {
-    throw new DashboardError(`Invalid repository identifier: ${JSON.stringify(id)}`);
+  if (!new RegExp(CONSTANTS.config.repositoryIdPattern).test(id)) {
+    throw new DashboardError(ERROR_MESSAGES.invalidRepositoryId(JSON.stringify(id)));
   }
-  const prefix = `${id}.`;
+  const prefix = `${id}${CONSTANTS.config.repoKeySeparator}`;
   const repository: Repository = {
-    owner: requiredProperty(properties, `${prefix}owner`),
-    repo: requiredProperty(properties, `${prefix}repo`),
-    branch: requiredProperty(properties, `${prefix}branch`),
-    workflow: requiredProperty(properties, `${prefix}workflow`),
-    artifact: requiredProperty(properties, `${prefix}artifact`),
-    cucumberPatterns: parsePatterns(properties.get(`${prefix}cucumber`), `${prefix}cucumber`)
+    owner: requiredProperty(properties, `${prefix}${CONSTANTS.config.ownerKey}`),
+    repo: requiredProperty(properties, `${prefix}${CONSTANTS.config.repoKey}`),
+    branch: requiredProperty(properties, `${prefix}${CONSTANTS.config.branchKey}`),
+    workflow: requiredProperty(properties, `${prefix}${CONSTANTS.config.workflowKey}`),
+    artifact: requiredProperty(properties, `${prefix}${CONSTANTS.config.artifactKey}`),
+    cucumberPatterns: parsePatterns(properties.get(`${prefix}${CONSTANTS.config.cucumberKey}`), `${prefix}${CONSTANTS.config.cucumberKey}`)
   };
   if (repository.cucumberPatterns.length === 0) {
-    throw new DashboardError(`${prefix}cucumber must configure at least one artifact file pattern`);
+    throw new DashboardError(ERROR_MESSAGES.missingCucumberGlob(`${prefix}${CONSTANTS.config.cucumberKey}`));
   }
-  for (const field of ['owner', 'repo', 'workflow'] as const) {
-    if (!/^[A-Za-z0-9_.-]+$/.test(repository[field])) {
-      throw new DashboardError(`Repository configuration has an invalid ${field}: ${JSON.stringify(repository[field])}`);
+  for (const field of [CONSTANTS.config.ownerKey, CONSTANTS.config.repoKey, CONSTANTS.config.workflowKey] as const) {
+    if (!new RegExp(CONSTANTS.config.repositoryValuePattern).test(repository[field])) {
+      throw new DashboardError(ERROR_MESSAGES.invalidRepositoryField(field, JSON.stringify(repository[field])));
     }
   }
   return repository;
@@ -160,19 +174,19 @@ function validateRepository(properties: Map<string, string>, id: string): Reposi
 
 export function parseProperties(configText: string): Map<string, string> {
   const properties = new Map<string, string>();
-  for (const [index, rawLine] of configText.split(/\r?\n/).entries()) {
+  for (const [index, rawLine] of configText.split(CONSTANTS.regex.lineBreak).entries()) {
     const line = rawLine.trim();
-    if (!line || line.startsWith('#') || line.startsWith('!')) {
+    if (!line || CONSTANTS.config.commentPrefixes.some((prefix) => line.startsWith(prefix))) {
       continue;
     }
-    const separator = line.indexOf('=');
+    const separator = line.indexOf(CONSTANTS.config.propertySeparator);
     if (separator <= 0) {
-      throw new DashboardError(`Invalid config.properties line ${index + 1}: expected key=value`);
+      throw new DashboardError(ERROR_MESSAGES.invalidPropertiesLine(index + 1));
     }
     const key = line.slice(0, separator).trim();
     const value = line.slice(separator + 1).trim();
     if (properties.has(key)) {
-      throw new DashboardError(`Duplicate config.properties key on line ${index + 1}: ${key}`);
+      throw new DashboardError(ERROR_MESSAGES.duplicatePropertiesKey(index + 1, key));
     }
     properties.set(key, value);
   }
@@ -182,59 +196,68 @@ export function parseProperties(configText: string): Map<string, string> {
 
 export function loadRepositories(configText: string): Repository[] {
   const properties = parseProperties(configText);
-  const ids = requiredProperty(properties, 'repositories')
-    .split(',')
+  const ids = requiredProperty(properties, CONSTANTS.config.repositoryListKey)
+    .split(CONSTANTS.config.listSeparator)
     .map((id) => id.trim())
     .filter(Boolean);
   if (ids.length === 0) {
-    throw new DashboardError('config.properties must list at least one repository');
+    throw new DashboardError(ERROR_MESSAGES.emptyRepositoryList);
   }
 
   const repositories = ids.map((id) => validateRepository(properties, id));
-  const repoIds = repositories.map(({ owner, repo }) => `${owner.toLowerCase()}/${repo.toLowerCase()}`);
+  const repoIds = repositories.map(({ owner, repo }) => repositoryIdentity(owner.toLowerCase(), repo.toLowerCase()));
   if (new Set(repoIds).size !== repoIds.length) {
-    throw new DashboardError('Repository config contains duplicate repositories');
+    throw new DashboardError(ERROR_MESSAGES.duplicateRepositories);
   }
   return repositories;
 }
 
 function matchesArtifactPattern(filename: string, patterns: string[]): boolean {
-  const normalized = filename.replaceAll('\\', '/');
+  const normalized = filename.replaceAll(CONSTANTS.config.windowsPathSeparator, CONSTANTS.config.pathSeparator);
   return patterns.some((pattern) => minimatch(normalized, pattern, { dot: true }));
+}
+
+function repositoryIdentity(owner: string, repo: string): string {
+  return `${owner}${CONSTANTS.config.pathSeparator}${repo}`;
+}
+
+function apiUrl(...segments: string[]): string {
+  return `${CONSTANTS.api.baseUrl}${CONSTANTS.config.pathSeparator}${segments.join(CONSTANTS.config.pathSeparator)}`;
 }
 
 async function requestBytes(url: string, token?: string): Promise<Buffer> {
   const headers: Record<string, string> = {
-    Accept: 'application/vnd.github+json',
-    'User-Agent': 'foundation-repo-dashboard',
-    'X-GitHub-Api-Version': '2022-11-28'
+    [CONSTANTS.api.acceptHeader]: CONSTANTS.api.acceptValue,
+    [CONSTANTS.api.userAgentHeader]: CONSTANTS.api.userAgentValue,
+    [CONSTANTS.api.versionHeader]: CONSTANTS.api.versionValue
   };
   if (token) {
-    headers.Authorization = `Bearer ${token}`;
+    headers[CONSTANTS.api.authorizationHeader] = `${CONSTANTS.api.bearerPrefix}${token}`;
   }
 
   let response: Response;
   try {
     response = await fetch(url, { headers, signal: AbortSignal.timeout(45_000) });
   } catch (error) {
-    throw new DashboardError(`GitHub request failed for ${url}: ${String(error)}`, {
-      cause: error
-    });
+    throw new DashboardError(ERROR_MESSAGES.requestFailed(url, String(error)), { cause: error });
   }
 
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 2048).trim();
-    throw new DashboardError(`GitHub request failed (${response.status}) for ${url}: ${detail || response.statusText}`);
+    if (response.status === CONSTANTS.http.unauthorizedStatus) {
+      throw new DashboardError(ERROR_MESSAGES.unauthorizedRequest(url, detail));
+    }
+    throw new DashboardError(ERROR_MESSAGES.httpRequestFailed(response.status, url, detail || response.statusText));
   }
 
-  const contentLength = Number(response.headers.get('content-length'));
+  const contentLength = Number(response.headers.get(CONSTANTS.http.contentLengthHeader));
   if (Number.isFinite(contentLength) && contentLength > MAX_ARCHIVE_BYTES) {
-    throw new DashboardError(`Response from ${url} exceeds the 100 MiB download limit`);
+    throw new DashboardError(ERROR_MESSAGES.responseTooLarge(url));
   }
 
   const reader = response.body?.getReader();
   if (!reader) {
-    throw new DashboardError(`GitHub returned an empty response for ${url}`);
+    throw new DashboardError(ERROR_MESSAGES.unexpectedEmptyResponse(url));
   }
   const chunks: Buffer[] = [];
   let total = 0;
@@ -247,7 +270,7 @@ async function requestBytes(url: string, token?: string): Promise<Buffer> {
       total += value.byteLength;
       if (total > MAX_ARCHIVE_BYTES) {
         await reader.cancel();
-        throw new DashboardError(`Response from ${url} exceeds the 100 MiB download limit`);
+        throw new DashboardError(ERROR_MESSAGES.responseTooLarge(url));
       }
       chunks.push(Buffer.from(value));
     }
@@ -260,15 +283,15 @@ async function requestBytes(url: string, token?: string): Promise<Buffer> {
 async function requestJson(url: string, token?: string): Promise<JsonRecord> {
   let response: unknown;
   try {
-    response = JSON.parse((await requestBytes(url, token)).toString('utf8'));
+    response = JSON.parse((await requestBytes(url, token)).toString(CONSTANTS.files.utf8Encoding));
   } catch (error) {
     if (error instanceof DashboardError) {
       throw error;
     }
-    throw new DashboardError(`GitHub returned invalid JSON for ${url}`, { cause: error });
+    throw new DashboardError(ERROR_MESSAGES.invalidJsonResponse(url), { cause: error });
   }
   if (!isRecord(response)) {
-    throw new DashboardError(`GitHub returned an unexpected response for ${url}`);
+    throw new DashboardError(ERROR_MESSAGES.unexpectedResponse(url));
   }
   return response;
 }
@@ -278,59 +301,87 @@ async function getLatestRun(repository: Repository, token?: string): Promise<Wor
   const repo = encodeURIComponent(repository.repo);
   const workflow = encodeURIComponent(repository.workflow);
   const query = new URLSearchParams({
-    branch: repository.branch,
-    status: 'completed',
-    per_page: '1'
+    [CONSTANTS.api.branchQueryKey]: repository.branch,
+    [CONSTANTS.api.statusQueryKey]: CONSTANTS.api.completedStatus,
+    [CONSTANTS.api.pageSizeQueryKey]: CONSTANTS.api.runPageSize
   });
-  const url = `${API_ROOT}/repos/${owner}/${repo}/actions/workflows/${workflow}/runs?${query}`;
+  const url = `${apiUrl(
+    CONSTANTS.api.resourceSegment,
+    owner,
+    repo,
+    CONSTANTS.api.actionsSegment,
+    CONSTANTS.api.workflowsSegment,
+    workflow,
+    CONSTANTS.api.runsSegment
+  )}?${query}`;
   const response = await requestJson(url, token);
-  const runs = response.workflow_runs;
+  const runs = response[CONSTANTS.api.workflowRunsKey];
   if (!Array.isArray(runs) || !isRecord(runs[0])) {
-    throw new DashboardError(`No completed run found for ${owner}/${repo} workflow ${repository.workflow} on branch ${repository.branch}`);
+    throw new DashboardError(ERROR_MESSAGES.noCompletedRun(owner, repo, repository.workflow, repository.branch));
   }
   const run = runs[0];
-  if (typeof run.id !== 'number' || typeof run.html_url !== 'string') {
-    throw new DashboardError(`GitHub returned an invalid latest run for ${owner}/${repo}`);
+  const id = run[CONSTANTS.api.idKey];
+  const htmlUrl = run[CONSTANTS.api.htmlUrlKey];
+  const conclusion = run[CONSTANTS.api.conclusionKey];
+  if (typeof id !== 'number' || typeof htmlUrl !== 'string') {
+    throw new DashboardError(ERROR_MESSAGES.invalidLatestRun(owner, repo));
   }
   return {
-    id: run.id,
-    html_url: run.html_url,
-    conclusion: typeof run.conclusion === 'string' ? run.conclusion : null
+    id,
+    html_url: htmlUrl,
+    conclusion: typeof conclusion === 'string' ? conclusion : null
   };
 }
 
 async function getArtifact(repository: Repository, run: WorkflowRun, token?: string): Promise<Artifact> {
   const owner = encodeURIComponent(repository.owner);
   const repo = encodeURIComponent(repository.repo);
-  const query = new URLSearchParams({ name: repository.artifact, per_page: '100' });
-  const url = `${API_ROOT}/repos/${owner}/${repo}/actions/runs/${run.id}/artifacts?${query}`;
+  const query = new URLSearchParams({
+    [CONSTANTS.api.artifactNameQueryKey]: repository.artifact,
+    [CONSTANTS.api.pageSizeQueryKey]: CONSTANTS.api.artifactPageSize
+  });
+  const url = `${apiUrl(
+    CONSTANTS.api.resourceSegment,
+    owner,
+    repo,
+    CONSTANTS.api.actionsSegment,
+    CONSTANTS.api.runsSegment,
+    String(run.id),
+    CONSTANTS.api.artifactsSegment
+  )}?${query}`;
   const response = await requestJson(url, token);
-  const artifacts = response.artifacts;
+  const artifacts = response[CONSTANTS.api.artifactsKey];
   if (!Array.isArray(artifacts)) {
-    throw new DashboardError(`GitHub returned an invalid artifact list for ${owner}/${repo}`);
+    throw new DashboardError(ERROR_MESSAGES.invalidArtifactList(owner, repo));
   }
   const usable = artifacts.filter(
     (artifact): artifact is JsonRecord =>
-      isRecord(artifact) && artifact.name === repository.artifact && artifact.expired === false && typeof artifact.id === 'number'
+      isRecord(artifact) &&
+      artifact[CONSTANTS.api.nameKey] === repository.artifact &&
+      artifact[CONSTANTS.api.expiredKey] === false &&
+      typeof artifact[CONSTANTS.api.idKey] === 'number'
   );
-  usable.sort((left, right) => stringValue(right.created_at).localeCompare(stringValue(left.created_at)));
+  usable.sort((left, right) => stringValue(right[CONSTANTS.api.createdAtKey]).localeCompare(stringValue(left[CONSTANTS.api.createdAtKey])));
   const artifact = usable[0];
   if (!artifact) {
-    throw new DashboardError(
-      `Run ${run.html_url} has no unexpired artifact named ${JSON.stringify(repository.artifact)}; make sure report artifacts are uploaded even when tests fail`
-    );
+    throw new DashboardError(ERROR_MESSAGES.noArtifact(run.html_url, JSON.stringify(repository.artifact)));
   }
+  const artifactId = artifact[CONSTANTS.api.idKey];
+  const createdAt = artifact[CONSTANTS.api.createdAtKey];
   return {
-    id: artifact.id as number,
+    id: artifactId as number,
     name: repository.artifact,
     expired: false,
-    created_at: typeof artifact.created_at === 'string' ? artifact.created_at : null
+    created_at: typeof createdAt === 'string' ? createdAt : null
   };
 }
 
 function validZipPath(filename: string): boolean {
-  const normalized = filename.replaceAll('\\', '/');
-  return !normalized.startsWith('/') && !normalized.split('/').includes('..');
+  const normalized = filename.replaceAll(CONSTANTS.config.windowsPathSeparator, CONSTANTS.config.pathSeparator);
+  return (
+    !normalized.startsWith(CONSTANTS.config.pathSeparator) &&
+    !normalized.split(CONSTANTS.config.pathSeparator).includes(CONSTANTS.config.traversalSegment)
+  );
 }
 
 async function readArchive(archive: Buffer, repository: Repository): Promise<ReportFile[]> {
@@ -342,7 +393,7 @@ async function readArchive(archive: Buffer, repository: Repository): Promise<Rep
       strictFileNames: true
     });
   } catch (error) {
-    throw new DashboardError(`Artifact ${repository.owner}/${repository.repo} is not a valid ZIP archive`, { cause: error });
+    throw new DashboardError(ERROR_MESSAGES.invalidArchive(repository.owner, repository.repo), { cause: error });
   }
 
   const files: ReportFile[] = [];
@@ -352,19 +403,22 @@ async function readArchive(archive: Buffer, repository: Repository): Promise<Rep
     for await (const entry of zip.eachEntry()) {
       entryCount += 1;
       if (entryCount > MAX_ARCHIVE_FILES) {
-        throw new DashboardError(`Artifact ${repository.owner}/${repository.repo} contains too many files`);
+        throw new DashboardError(ERROR_MESSAGES.tooManyArchiveFiles(repository.owner, repository.repo));
       }
-      if (entry.fileName.endsWith('/') || !validZipPath(entry.fileName)) {
+      if (entry.fileName.endsWith(CONSTANTS.files.zipDirectorySuffix) || !validZipPath(entry.fileName)) {
         continue;
       }
 
-      if (path.posix.extname(entry.fileName).toLowerCase() !== '.json' || !matchesArtifactPattern(entry.fileName, repository.cucumberPatterns)) {
+      if (
+        path.posix.extname(entry.fileName).toLowerCase() !== CONSTANTS.files.jsonExtension ||
+        !matchesArtifactPattern(entry.fileName, repository.cucumberPatterns)
+      ) {
         continue;
       }
 
       totalUncompressed += entry.uncompressedSize;
       if (totalUncompressed > MAX_UNCOMPRESSED_BYTES) {
-        throw new DashboardError(`Artifact ${repository.owner}/${repository.repo} exceeds the 250 MiB uncompressed limit`);
+        throw new DashboardError(ERROR_MESSAGES.archiveTooLarge(repository.owner, repository.repo));
       }
 
       const stream = await zip.openReadStreamPromise(entry);
@@ -374,7 +428,7 @@ async function readArchive(archive: Buffer, repository: Repository): Promise<Rep
         const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         fileSize += data.length;
         if (fileSize > MAX_UNCOMPRESSED_BYTES) {
-          throw new DashboardError(`File ${entry.fileName} exceeds the uncompressed size limit`);
+          throw new DashboardError(ERROR_MESSAGES.fileTooLarge(entry.fileName));
         }
         chunks.push(data);
       }
@@ -385,7 +439,7 @@ async function readArchive(archive: Buffer, repository: Repository): Promise<Rep
     if (error instanceof DashboardError) {
       throw error;
     }
-    throw new DashboardError(`Could not read artifact ZIP for ${repository.owner}/${repository.repo}: ${String(error)}`, { cause: error });
+    throw new DashboardError(ERROR_MESSAGES.archiveReadFailed(repository.owner, repository.repo, String(error)), { cause: error });
   }
   return files;
 }
@@ -393,18 +447,26 @@ async function readArchive(archive: Buffer, repository: Repository): Promise<Rep
 async function downloadArtifact(repository: Repository, artifact: Artifact, token?: string): Promise<ReportFile[]> {
   const owner = encodeURIComponent(repository.owner);
   const repo = encodeURIComponent(repository.repo);
-  const url = `${API_ROOT}/repos/${owner}/${repo}/actions/artifacts/${artifact.id}/zip`;
+  const url = apiUrl(
+    CONSTANTS.api.resourceSegment,
+    owner,
+    repo,
+    CONSTANTS.api.actionsSegment,
+    CONSTANTS.api.artifactsSegment,
+    String(artifact.id),
+    CONSTANTS.api.archiveFormat
+  );
   return readArchive(await requestBytes(url, token), repository);
 }
 
 function labels(repository: Repository, suite: string, format: string, extra: AllureLabel[] = []): AllureLabel[] {
   return [
-    { name: 'parentSuite', value: repository.repo },
-    { name: 'suite', value: suite },
-    { name: 'package', value: `${repository.owner}/${repository.repo}` },
-    { name: 'tag', value: `source:${repository.owner}/${repository.repo}` },
-    { name: 'tag', value: `format:${format}` },
-    ...extra.filter(({ value }) => value !== '')
+    { name: CONSTANTS.allure.parentSuiteLabel, value: repository.repo },
+    { name: CONSTANTS.allure.suiteLabel, value: suite },
+    { name: CONSTANTS.allure.packageLabel, value: repositoryIdentity(repository.owner, repository.repo) },
+    { name: CONSTANTS.allure.tagLabel, value: `${CONSTANTS.allure.sourceTagPrefix}${repositoryIdentity(repository.owner, repository.repo)}` },
+    { name: CONSTANTS.allure.tagLabel, value: `${CONSTANTS.allure.formatTagPrefix}${format}` },
+    ...extra.filter(({ value }) => value !== CONSTANTS.strings.empty)
   ];
 }
 
@@ -423,15 +485,15 @@ function makeResult(options: {
   const result: AllureResult = {
     uuid: randomUUID(),
     historyId: hash(options.fullName),
-    testCaseId: hash(`${options.fullName}#${options.name}`),
+    testCaseId: hash(`${options.fullName}${CONSTANTS.separators.hash}${options.name}`),
     name: options.name,
     fullName: options.fullName,
     status: options.status,
-    stage: 'finished',
+    stage: CONSTANTS.allure.finishedStage,
     start: options.start,
     stop: options.start + options.duration,
     labels: options.labels,
-    links: [{ name: 'GitHub Actions run', url: options.runUrl, type: 'link' }]
+    links: [{ name: CONSTANTS.allure.runLinkName, url: options.runUrl, type: CONSTANTS.allure.linkType }]
   };
   if (options.steps) {
     result.steps = options.steps;
@@ -441,8 +503,8 @@ function makeResult(options: {
       known: false,
       muted: false,
       flaky: false,
-      message: options.message ?? '',
-      trace: options.trace ?? ''
+      message: options.message ?? CONSTANTS.strings.empty,
+      trace: options.trace ?? CONSTANTS.strings.empty
     };
   }
   return result;
@@ -453,74 +515,74 @@ function cucumberStatus(steps: unknown[]): {
   message: string;
   trace: string;
 } {
+  const { unknown, failed, ambiguous, undefined: undefinedStatus, pending, skipped, passed, broken } = CONSTANTS.cucumber.status;
   if (steps.length === 0) {
-    return { status: 'unknown', message: '', trace: '' };
+    return { status: unknown, message: CONSTANTS.strings.empty, trace: CONSTANTS.strings.empty };
   }
 
   const statuses: string[] = [];
   const messages: string[] = [];
   const traces: string[] = [];
   for (const step of steps) {
-    const result = isRecord(step) && isRecord(step.result) ? step.result : undefined;
-    const status = stringValue(result?.status, 'unknown').toLowerCase();
+    const result = getRecord(step, CONSTANTS.cucumber.resultKey);
+    const status = stringValue(result?.[CONSTANTS.cucumber.statusKey], unknown).toLowerCase();
     statuses.push(status);
-    const error = stringValue(result?.error_message).trim();
+    const error = stringValue(result?.[CONSTANTS.cucumber.errorMessageKey]).trim();
     if (error) {
-      messages.push(error.split(/\r?\n/, 1)[0] ?? '');
+      messages.push(error.split(CONSTANTS.regex.lineBreak, 1)[0] ?? '');
       traces.push(error);
     }
   }
 
   const mapping: Array<[string, string]> = [
-    ['failed', 'failed'],
-    ['ambiguous', 'failed'],
-    ['undefined', 'broken'],
-    ['pending', 'skipped'],
-    ['skipped', 'skipped'],
-    ['unknown', 'unknown']
+    [failed, failed],
+    [ambiguous, failed],
+    [undefinedStatus, broken],
+    [pending, skipped],
+    [skipped, skipped],
+    [unknown, unknown]
   ];
   for (const [source, target] of mapping) {
     if (statuses.includes(source)) {
-      return { status: target, message: messages.join('\n'), trace: traces.join('\n\n') };
+      return { status: target, message: messages.join(CONSTANTS.separators.lineBreak), trace: traces.join(CONSTANTS.separators.trace) };
     }
   }
-  return statuses.every((status) => status === 'passed')
-    ? { status: 'passed', message: '', trace: '' }
-    : { status: 'unknown', message: messages.join('\n'), trace: traces.join('\n\n') };
+  return statuses.every((status) => status === passed)
+    ? { status: passed, message: CONSTANTS.strings.empty, trace: CONSTANTS.strings.empty }
+    : { status: unknown, message: messages.join(CONSTANTS.separators.lineBreak), trace: traces.join(CONSTANTS.separators.trace) };
 }
 
 function allureCucumberStatus(status: string): string {
+  const { passed, failed, ambiguous, undefined: undefinedStatus, pending, skipped, unknown, broken } = CONSTANTS.cucumber.status;
   switch (status.toLowerCase()) {
-    case 'passed':
-      return 'passed';
-    case 'failed':
-    case 'ambiguous':
-      return 'failed';
-    case 'undefined':
-      return 'broken';
-    case 'pending':
-    case 'skipped':
-      return 'skipped';
+    case passed:
+      return passed;
+    case failed:
+    case ambiguous:
+      return failed;
+    case undefinedStatus:
+      return broken;
+    case pending:
+    case skipped:
+      return skipped;
     default:
-      return 'unknown';
+      return unknown;
   }
 }
 
 function cucumberResults(filename: string, data: Buffer, repository: Repository, runUrl: string): AllureResult[] | undefined {
   let document: unknown;
   try {
-    document = JSON.parse(data.toString('utf8'));
+    document = JSON.parse(data.toString(CONSTANTS.files.utf8Encoding));
   } catch (error) {
-    if (filename.toLowerCase().includes('cucumber')) {
-      throw new DashboardError(`Invalid Cucumber JSON in ${filename}: ${String(error)}`, {
-        cause: error
-      });
+    if (filename.toLowerCase().includes(CONSTANTS.cucumber.errorNameHint)) {
+      throw new DashboardError(ERROR_MESSAGES.invalidCucumberJson(filename, String(error)), { cause: error });
     }
     return undefined;
   }
 
-  const features = isRecord(document) ? document.features : document;
-  if (!Array.isArray(features) || !features.some((feature) => isRecord(feature) && 'elements' in feature)) {
+  const features = isRecord(document) ? document[CONSTANTS.cucumber.featuresKey] : document;
+  if (!Array.isArray(features) || !features.some((feature) => isRecord(feature) && CONSTANTS.cucumber.elementsKey in feature)) {
     return undefined;
   }
 
@@ -529,37 +591,50 @@ function cucumberResults(filename: string, data: Buffer, repository: Repository,
     if (!isRecord(feature)) {
       continue;
     }
-    const featureName = stringValue(feature.name, stringValue(feature.uri, filename));
-    for (const element of recordArray(feature.elements)) {
-      if (element.type === 'background') {
+    const featureName = stringValue(feature[CONSTANTS.cucumber.nameKey], stringValue(feature[CONSTANTS.cucumber.uriKey], filename));
+    for (const element of recordArray(feature[CONSTANTS.cucumber.elementsKey])) {
+      if (element[CONSTANTS.cucumber.typeKey] === CONSTANTS.cucumber.backgroundType) {
         continue;
       }
 
-      const name = stringValue(element.name, stringValue(element.id, 'Unnamed scenario'));
-      const fullName = `${repository.owner}/${repository.repo} / ${featureName} / ${name}`;
+      const name = stringValue(
+        element[CONSTANTS.cucumber.nameKey],
+        stringValue(element[CONSTANTS.cucumber.idKey], CONSTANTS.cucumber.unnamedScenario)
+      );
+      const fullName = `${repositoryIdentity(repository.owner, repository.repo)}${CONSTANTS.cucumber.featureSeparator}${featureName}${CONSTANTS.cucumber.featureSeparator}${name}`;
       const steps = [
-        ...recordArray(element.before).map((value) => ({ value, phase: 'Before hook' })),
-        ...recordArray(element.steps).map((value) => ({ value, phase: '' })),
-        ...recordArray(element.after).map((value) => ({ value, phase: 'After hook' }))
+        ...recordArray(element[CONSTANTS.cucumber.beforeKey]).map((value) => ({
+          value,
+          phase: CONSTANTS.cucumber.beforeHookName
+        })),
+        ...recordArray(element[CONSTANTS.cucumber.stepsKey]).map((value) => ({ value, phase: CONSTANTS.strings.empty })),
+        ...recordArray(element[CONSTANTS.cucumber.afterKey]).map((value) => ({
+          value,
+          phase: CONSTANTS.cucumber.afterHookName
+        }))
       ];
       const stepValues = steps.map(({ value }) => value);
       const outcome = cucumberStatus(stepValues);
-      const scenarioStart = timestampMilliseconds(element.start_timestamp);
+      const scenarioStart = timestampMilliseconds(element[CONSTANTS.cucumber.startTimestampKey]);
       let duration = 0;
       const allureSteps = steps.map(({ value, phase }): AllureStep => {
-        const result = isRecord(value) && isRecord(value.result) ? value.result : undefined;
-        const stepDuration = durationMilliseconds(result?.duration, 1 / 1_000_000);
+        const result = getRecord(value, CONSTANTS.cucumber.resultKey);
+        const stepDuration = durationMilliseconds(result?.[CONSTANTS.cucumber.durationKey], 1 / 1_000_000);
         const start = scenarioStart + duration;
         duration += stepDuration;
 
-        const match = isRecord(value) && isRecord(value.match) ? value.match : undefined;
-        const location = stringValue(match?.location);
-        const name = valueHasName(value) ? stringValue(value.name) : `${phase || 'Unnamed step'}${location ? ` (${location})` : ''}`;
-        const message = stringValue(result?.error_message);
+        const match = getRecord(value, CONSTANTS.cucumber.matchKey);
+        const location = stringValue(match?.[CONSTANTS.cucumber.locationKey]);
+        const name = valueHasName(value)
+          ? stringValue(value[CONSTANTS.cucumber.nameKey])
+          : `${phase || CONSTANTS.cucumber.unnamedStep}${
+              location ? `${CONSTANTS.cucumber.locationPrefix}${location}${CONSTANTS.cucumber.locationSuffix}` : CONSTANTS.strings.empty
+            }`;
+        const message = stringValue(result?.[CONSTANTS.cucumber.errorMessageKey]);
         const step: AllureStep = {
           name,
-          status: allureCucumberStatus(stringValue(result?.status, 'unknown')),
-          stage: 'finished',
+          status: allureCucumberStatus(stringValue(result?.[CONSTANTS.cucumber.statusKey], CONSTANTS.cucumber.status.unknown)),
+          stage: CONSTANTS.allure.finishedStage,
           start,
           stop: start + stepDuration
         };
@@ -568,13 +643,16 @@ function cucumberResults(filename: string, data: Buffer, repository: Repository,
             known: false,
             muted: false,
             flaky: false,
-            message: message.split(/\r?\n/, 1)[0] ?? '',
+            message: message.split(CONSTANTS.regex.lineBreak, 1)[0] ?? '',
             trace: message
           };
         }
         return step;
       });
-      const tags = [...recordArray(feature.tags), ...recordArray(element.tags)].map((tag) => stringValue(tag.name).replace(/^@/, ''));
+      const tags = [...recordArray(feature[CONSTANTS.cucumber.tagsKey]), ...recordArray(element[CONSTANTS.cucumber.tagsKey])].map((tag) => {
+        const tagName = stringValue(tag[CONSTANTS.cucumber.nameKey]);
+        return tagName.startsWith(CONSTANTS.cucumber.tagPrefix) ? tagName.slice(1) : tagName;
+      });
 
       results.push(
         makeResult({
@@ -586,8 +664,8 @@ function cucumberResults(filename: string, data: Buffer, repository: Repository,
           labels: labels(
             repository,
             featureName,
-            'cucumber',
-            tags.map((value) => ({ name: 'tag', value }))
+            CONSTANTS.allure.sourceFormat,
+            tags.map((value) => ({ name: CONSTANTS.allure.tagLabel, value }))
           ),
           runUrl,
           steps: allureSteps,
@@ -601,21 +679,23 @@ function cucumberResults(filename: string, data: Buffer, repository: Repository,
 }
 
 function valueHasName(value: unknown): boolean {
-  return isRecord(value) && typeof value.name === 'string' && value.name.length > 0;
+  const name = isRecord(value) ? value[CONSTANTS.cucumber.nameKey] : undefined;
+  return typeof name === 'string' && name.length > 0;
 }
 
 export function convertArtifact(files: ReportFile[], repository: Repository, runUrl: string): AllureResult[] {
   const results: AllureResult[] = [];
   for (const file of files) {
-    if (path.posix.extname(file.filename).toLowerCase() === '.json' && matchesArtifactPattern(file.filename, repository.cucumberPatterns)) {
+    if (
+      path.posix.extname(file.filename).toLowerCase() === CONSTANTS.files.jsonExtension &&
+      matchesArtifactPattern(file.filename, repository.cucumberPatterns)
+    ) {
       results.push(...(cucumberResults(file.filename, file.data, repository, runUrl) ?? []));
     }
   }
 
   if (results.length === 0) {
-    throw new DashboardError(
-      `Artifact ${repository.owner}/${repository.repo} contains no usable Cucumber scenarios. Include Cucumber JSON matching the configured file pattern; rendered HTML reports cannot be converted into reliable Allure test results.`
-    );
+    throw new DashboardError(ERROR_MESSAGES.noCucumberScenarios(repository.owner, repository.repo));
   }
   return results;
 }
@@ -623,66 +703,72 @@ export function convertArtifact(files: ReportFile[], repository: Repository, run
 async function writeResults(output: string, results: AllureResult[], repositories: Repository[]): Promise<void> {
   await mkdir(output, { recursive: true });
   if ((await readdir(output)).length > 0) {
-    throw new DashboardError(`Output directory ${output} must be empty`);
+    throw new DashboardError(ERROR_MESSAGES.outputNotEmpty(output));
   }
 
-  await Promise.all(results.map((result) => writeFile(path.join(output, `${result.uuid}-result.json`), JSON.stringify(result), 'utf8')));
+  await Promise.all(
+    results.map((result) =>
+      writeFile(path.join(output, `${result.uuid}${CONSTANTS.files.resultFileSuffix}`), JSON.stringify(result), CONSTANTS.files.utf8Encoding)
+    )
+  );
 
-  const runNumber = process.env.GITHUB_RUN_NUMBER ?? 'local';
+  const runNumber = process.env[CONSTANTS.files.runNumberVariable] ?? CONSTANTS.runtime.localBuildName;
   const executor = {
-    name: 'GitHub Actions',
-    type: 'github',
+    name: CONSTANTS.allure.executorName,
+    type: CONSTANTS.allure.executorType,
     buildName: runNumber,
     buildOrder: Number(runNumber) || 0,
-    reportUrl: `${process.env.GITHUB_SERVER_URL ?? 'https://github.com'}/${process.env.GITHUB_REPOSITORY ?? ''}`
+    reportUrl: `${process.env[CONSTANTS.files.serverUrlVariable] ?? CONSTANTS.runtime.githubFallbackUrl}${CONSTANTS.config.pathSeparator}${process.env[CONSTANTS.files.repositoryVariable] ?? CONSTANTS.strings.empty}`
   };
-  await writeFile(path.join(output, 'executor.json'), JSON.stringify(executor), 'utf8');
+  await writeFile(path.join(output, CONSTANTS.files.executorFile), JSON.stringify(executor), CONSTANTS.files.utf8Encoding);
   await writeFile(
-    path.join(output, 'environment.properties'),
-    `source.repositories=${repositories.map(({ owner, repo }) => `${owner}/${repo}`).join(',')}\n`,
-    'utf8'
+    path.join(output, CONSTANTS.files.environmentFile),
+    `${CONSTANTS.files.sourceRepositoriesProperty}=${repositories
+      .map(({ owner, repo }) => `${owner}${CONSTANTS.config.pathSeparator}${repo}`)
+      .join(CONSTANTS.config.listSeparator)}${CONSTANTS.separators.lineBreak}`,
+    CONSTANTS.files.utf8Encoding
   );
 }
 
 export async function buildDashboard(configPath: string, output: string): Promise<number> {
-  const repositories = loadRepositories(await readFile(configPath, 'utf8'));
-  const token = process.env.REPORTS_READ_TOKEN || undefined;
+  const repositories = loadRepositories(await readFile(configPath, CONSTANTS.files.utf8Encoding));
+  const token = process.env[CONSTANTS.files.reportsTokenVariable] || undefined;
   const results: AllureResult[] = [];
 
   for (const repository of repositories) {
-    const identity = `${repository.owner}/${repository.repo}`;
-    console.log(`Collecting latest completed report from ${identity}...`);
+    const identity = repositoryIdentity(repository.owner, repository.repo);
+    console.log(LOG_MESSAGES.collectingRepository(identity));
     const run = await getLatestRun(repository, token);
-    if (!['success', 'failure', 'cancelled', 'timed_out'].includes(run.conclusion ?? '')) {
-      throw new DashboardError(`Latest run ${run.html_url} has unsupported conclusion ${JSON.stringify(run.conclusion)}`);
+    if (!CONSTANTS.runConclusions.some((conclusion) => conclusion === run.conclusion)) {
+      throw new DashboardError(ERROR_MESSAGES.unsupportedRunConclusion(run.html_url, JSON.stringify(run.conclusion)));
     }
     const artifact = await getArtifact(repository, run, token);
     const files = await downloadArtifact(repository, artifact, token);
     const converted = convertArtifact(files, repository, run.html_url);
-    console.log(`  Added ${converted.length} test results from run ${run.html_url}`);
+    console.log(LOG_MESSAGES.addedResults(converted.length, run.html_url));
     results.push(...converted);
   }
 
   await writeResults(output, results, repositories);
-  console.log(`Generated ${results.length} Allure test results in ${output}`);
+  console.log(LOG_MESSAGES.generatedResults(results.length, output));
   return results.length;
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const configIndex = args.indexOf('--config');
-  const outputIndex = args.indexOf('--output');
+  const configIndex = args.indexOf(CONSTANTS.files.configOption);
+  const outputIndex = args.indexOf(CONSTANTS.files.outputOption);
   const configPath = configIndex >= 0 ? args[configIndex + 1] : undefined;
   const output = outputIndex >= 0 ? args[outputIndex + 1] : undefined;
   if (!configPath || !output || args.length !== 4) {
-    throw new DashboardError('Usage: node dist/build-dashboard.js --config <config.properties> --output <allure-results>');
+    throw new DashboardError(ERROR_MESSAGES.cliUsage);
   }
   await buildDashboard(configPath, output);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error: unknown) => {
-    console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(LOG_MESSAGES.error(error instanceof Error ? error.message : String(error)));
     process.exitCode = 1;
   });
 }
