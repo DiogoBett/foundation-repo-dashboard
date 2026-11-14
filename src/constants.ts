@@ -10,7 +10,7 @@ export const CONSTANTS = {
     authorizationHeader: 'Authorization',
     bearerPrefix: 'Bearer ',
     completedStatus: 'completed',
-    runPageSize: '1',
+    runPageSize: '100',
     artifactPageSize: '100',
     resourceSegment: 'repos',
     actionsSegment: 'actions',
@@ -21,6 +21,7 @@ export const CONSTANTS = {
     branchQueryKey: 'branch',
     statusQueryKey: 'status',
     pageSizeQueryKey: 'per_page',
+    pageQueryKey: 'page',
     artifactNameQueryKey: 'name',
     workflowRunsKey: 'workflow_runs',
     artifactsKey: 'artifacts',
@@ -165,7 +166,8 @@ export const ERROR_MESSAGES = {
   invalidLatestRun: (owner: string, repo: string) => `GitHub returned an invalid latest run for ${owner}/${repo}`,
   invalidArtifactList: (owner: string, repo: string) => `GitHub returned an invalid artifact list for ${owner}/${repo}`,
   noArtifact: (runUrl: string, artifact: string) =>
-    `Run ${runUrl} has no unexpired artifact named ${artifact}; make sure report artifacts are uploaded even when tests fail`,
+    `No unexpired artifact named ${artifact} was found in the completed runs through ${runUrl}; make sure report artifacts are uploaded even when tests fail`,
+  noRepositoryReports: (failures: string) => `No repository reports could be collected: ${failures}`,
   invalidArchive: (owner: string, repo: string) => `Artifact ${owner}/${repo} is not a valid ZIP archive`,
   tooManyArchiveFiles: (owner: string, repo: string) => `Artifact ${owner}/${repo} contains too many files`,
   archiveTooLarge: (owner: string, repo: string) => `Artifact ${owner}/${repo} exceeds the 250 MiB uncompressed limit`,
@@ -182,6 +184,7 @@ export const ERROR_MESSAGES = {
 export const LOG_MESSAGES = {
   collectingRepository: (identity: string) => `Collecting latest completed report from ${identity}...`,
   addedResults: (count: number, runUrl: string) => `  Added ${count} test results from run ${runUrl}`,
+  repositoryFailed: (identity: string, reason: string) => `Failed to collect report from ${identity}: ${reason}`,
   generatedResults: (count: number, output: string) => `Generated ${count} Allure test results in ${output}`,
   error: (message: string) => `Error: ${message}`
 } as const;

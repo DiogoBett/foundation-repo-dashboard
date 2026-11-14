@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { convertArtifact, DashboardError, loadRepositories, type Repository } from './build-dashboard.js';
+import { collectRepositories, convertArtifact, DashboardError, getLatestRun, loadRepositories, type Repository } from './build-dashboard.js';
 
 const repository: Repository = {
   owner: 'DiogoBett',
@@ -136,4 +136,70 @@ test('uses configured file patterns to select artifact reports', () => {
     () => convertArtifact([{ filename: 'other/cucumber.json', data: report }], constrainedRepository, runUrl),
     (error: unknown) => error instanceof DashboardError && error.message.includes('no usable Cucumber scenarios')
   );
+});
+
+test('falls back to an older completed run with an unexpired artifact', async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedPaths: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    requestedPaths.push(url.pathname);
+    if (url.pathname.endsWith('/actions/workflows/run-automated-tests.yml/runs')) {
+      return new Response(
+        JSON.stringify({
+          workflow_runs: [
+            { id: 2, html_url: `${runUrl}/2`, conclusion: 'success' },
+            { id: 1, html_url: `${runUrl}/1`, conclusion: 'success' }
+          ]
+        })
+      );
+    }
+    if (url.pathname.endsWith('/runs/2/artifacts')) {
+      return new Response(JSON.stringify({ artifacts: [{ id: 22, name: repository.artifact, expired: true }] }));
+    }
+    if (url.pathname.endsWith('/runs/1/artifacts')) {
+      return new Response(JSON.stringify({ artifacts: [{ id: 11, name: repository.artifact, expired: false }] }));
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  try {
+    const report = await getLatestRun(repository);
+    assert.equal(report.run.id, 1);
+    assert.equal(report.artifact.id, 11);
+    assert.ok(requestedPaths.some((pathname) => pathname.endsWith('/runs/2/artifacts')));
+    assert.ok(requestedPaths.some((pathname) => pathname.endsWith('/runs/1/artifacts')));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('continues collecting repositories when one repository fails', async () => {
+  const secondRepository = { ...repository, repo: 'web-automation-foundation' };
+  const report = convertArtifact(
+    [{ filename: 'cucumber.json', data: Buffer.from(JSON.stringify([{ name: 'Account', elements: [{ name: 'sign in', steps: [] }] }])) }],
+    secondRepository,
+    runUrl
+  );
+  const originalError = console.error;
+  const loggedErrors: string[] = [];
+  console.error = (...values: unknown[]) => loggedErrors.push(values.map(String).join(' '));
+
+  try {
+    const collected = await collectRepositories([repository, secondRepository], async (currentRepository) => {
+      if (currentRepository.repo === repository.repo) {
+        throw new Error('source report unavailable');
+      }
+      return { runUrl, results: report };
+    });
+
+    assert.deepEqual(
+      collected.repositories.map(({ repo }) => repo),
+      [secondRepository.repo]
+    );
+    assert.equal(collected.results.length, 1);
+    assert.ok(loggedErrors.some((message) => message.includes(repository.repo) && message.includes('source report unavailable')));
+  } finally {
+    console.error = originalError;
+  }
 });
