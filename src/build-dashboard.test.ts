@@ -19,10 +19,12 @@ test('loads repositories and report globs from config.properties', async () => {
 
   assert.deepEqual(
     repositories.map(({ repo }) => repo),
-    ['api-automation-foundation', 'web-automation-foundation']
+    ['api-automation-foundation', 'web-automation-foundation', 'performance-automation-foundation']
   );
   assert.equal(repositories[0]?.artifact, 'test_report');
-  assert.deepEqual(repositories[0]?.cucumberPatterns, ['**/*.json']);
+  repositories.forEach(({ cucumberPatterns }) => {
+    assert.deepEqual(cucumberPatterns, ['**/*.json']);
+  });
 });
 
 test('converts Cucumber scenarios and step failures', () => {
